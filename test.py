@@ -44,8 +44,8 @@ def test_single_algorithm(algorithm, test_file):
         sys.executable, "encode.py", test_file,
         "-a", algorithm,
         "-o", output_base,
-        "-c", "6",
-        "-s", "2000"
+        "-c", "9",
+        "-s", "3000"
     ], capture_output=True, text=True, timeout=120)
 
     if encode_result.returncode != 0:
@@ -118,7 +118,7 @@ def main():
     """主测试函数"""
     print("=== 文件压缩算法性能测试 ===\n")
 
-    test_file = "test.patch"
+    test_file = "3body.txt"
 
     # 检查测试文件
     if not os.path.exists(test_file):

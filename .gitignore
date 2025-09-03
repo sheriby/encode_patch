@@ -1,3 +1,4 @@
 compress*
 restore*
 test_output/
+.vscode

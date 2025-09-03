@@ -111,8 +111,11 @@ def save_encoded_string_in_chunks(encoded_string: str, chunk_size: int, base_fil
     if encoded_string is None or encoded_string == "":
         logger.error("没有可保存的数据")
         return False
+    
+    if chunk_size == 0:
+        chunk_size = len(encoded_string)
 
-    if chunk_size <= 0:
+    if chunk_size < 0:
         logger.error("分块大小必须大于0")
         return False
 
