@@ -1,0 +1,3011 @@
+use std::error::Error;
+use std::{env, fs};
+use regex::Regex;
+
+pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    let contents = fs::read_to_string(config.file_path)?;
+    // println!("file content is \n{}", contents);
+    let result = if config.use_regex {
+        search_regex(&config.query, &contents)?
+    } else if config.use_glob {
+        search_glob(&config.query, &contents)
+    } else if config.ignore_case {
+        search_insentive(&config.query, &contents)
+    } else {
+        search(&config.query, &contents)
+    };
+    for line in result {
+        println!("{line}");
+    }
+
+    Ok(())
+}
+
+pub struct Config {
+    pub query: String,
+    pub file_path: String,
+    pub ignore_case: bool,
+    pub use_regex: bool,
+    pub use_glob: bool,
+}
+
+impl Config {
+    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str> {
+        args.next();
+
+        let mut query: Option<String> = None;
+        let mut file_path: Option<String> = None;
+        let mut use_regex = false;
+        let mut use_glob = false;
+
+        // Parse flags
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--regex" => use_regex = true,
+                "--glob" => use_glob = true,
+                _ => {
+                    // If not a flag, treat as query or file_path
+                    if query.is_none() {
+                        query = Some(arg);
+                    } else if file_path.is_none() {
+                        file_path = Some(arg);
+                    } else {
+                        return Err("Too many arguments");
+                    }
+                }
+            }
+        }
+
+        let query = query.ok_or("Can't get a query string")?;
+        let file_path = file_path.ok_or("Can't get a file path")?;
+
+        let ignore_case = env::var("IGNORE_CASE").is_ok();
+
+        Ok(Config {
+            query,
+            file_path,
+            ignore_case,
+            use_regex,
+            use_glob,
+        })
+    }
+}
+
+pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    contents
+        .lines()
+        .filter(|line| line.contains(&query))
+        .collect()
+}
+
+pub fn search_insentive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    let query = query.to_lowercase();
+    contents
+        .lines()
+        .filter(|line| line.to_lowercase().contains(&query))
+        .collect()
+}
+
+pub fn search_regex<'a>(query: &str, contents: &'a str) -> Result<Vec<&'a str>, Box<dyn Error>> {
+    let re = Regex::new(query)?;
+    Ok(contents
+        .lines()
+        .filter(|line| re.is_match(line))
+        .collect())
+}
+
+pub fn search_glob<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    // Convert glob pattern to regex pattern for substring matching
+    let regex_pattern = glob_to_regex(query);
+    if let Ok(re) = Regex::new(&regex_pattern) {
+        contents
+            .lines()
+            .filter(|line| re.is_match(line))
+            .collect()
+    } else {
+        // Fallback to simple string matching if glob conversion fails
+        contents
+            .lines()
+            .filter(|line| line.contains(query))
+            .collect()
+    }
+}
+
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^.*");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push_str("."),
+            '.' => regex.push_str("\\."),
+            '+' => regex.push_str("\\+"),
+            '^' => regex.push_str("\\^"),
+            '$' => regex.push_str("\\$"),
+            '(' => regex.push_str("\\("),
+            ')' => regex.push_str("\\)"),
+            '[' => regex.push_str("\\["),
+            ']' => regex.push_str("\\]"),
+            '{' => regex.push_str("\\{"),
+            '}' => regex.push_str("\\}"),
+            '|' => regex.push_str("\\|"),
+            '\\' => regex.push_str("\\\\"),
+            _ => regex.push(ch),
+        }
+    }
+    regex.push_str(".*$");
+    regex
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{search, search_insentive, search_regex, search_glob};
+
+    #[test]
+    fn case_sensitive() {
+        let query = "duct";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        assert_eq!(vec!["safe, fast, productive."], search(query, contents));
+    }
+
+    #[test]
+    fn case_insensitive() {
+        let query = "Rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.
+Trust me.";
+
+        assert_eq!(
+            vec!["Rust:", "Trust me."],
+            search_insentive(query, contents)
+        );
+    }
+
+    #[test]
+    fn regex_simple() {
+        let query = "safe|fast";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn regex_start_of_line() {
+        let query = "^[A-Z]";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_word_boundary() {
+        let query = r"\b\w{4}\b";
+        let contents = "\
+Rust safe fast
+Pick three";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust safe fast", "Pick three"], result);
+    }
+
+    #[test]
+    fn regex_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.";
+
+        let result = search_regex(query, contents);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn glob_simple() {
+        let query = "*fast*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn glob_wildcard_end() {
+        let query = "R*t";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        // Invalid glob patterns should fall back to "*" pattern
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_case_insensitive() {
+        let query = "(?i)rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_multiple_matches() {
+        let query = "*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+}
+/**
+ * Flashcard mode functionality
+ */
+
+import { loadDeckWords, updateFSRSData } from './api.js';
+import { showFlashcardScreen, showHomeScreen } from './ui.js';
+
+// State variables
+let currentQuestion = null;
+let allQuestions = [];
+let currentDeckId = null;
+let flashcardState = 'front';
+let currentQuestionIndex = 0;
+let isLoadingQuestions = false;
+let isProcessingDifficulty = false;
+
+/**
+ * Start flashcard mode with a specific deck
+ *
+ * @param {number} deckId - Deck ID
+ */
+export async function startFlashcardMode(deckId) {
+    currentDeckId = deckId;
+
+    try {
+        // 重置状态
+        allQuestions = [];
+        isLoadingQuestions = false;
+        currentQuestionIndex = 0; // 重置当前题目索引
+
+        // Show flashcard screen
+        showFlashcardScreen();
+
+        // Add event listeners
+        setupEventListeners();
+
+        // 加载题目
+        await loadQuestions();
+
+        // Show first flashcard
+        nextFlashcard();
+    } catch (error) {
+        console.error('Error starting flashcard mode:', error);
+        throw error;
+    }
+}
+
+/**
+ * 随机打乱数组顺序（Fisher-Yates 洗牌算法）
+ *
+ * @param {Array} array - 要打乱的数组
+ * @returns {Array} - 打乱后的数组
+ */
+function shuffleArray(array) {
+    const shuffled = [...array]; // 创建数组的副本
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; // 交换元素
+    }
+    return shuffled;
+}
+
+/**
+ * Load questions from the server
+ */
+async function loadQuestions() {
+    if (isLoadingQuestions) return;
+
+    isLoadingQuestions = true;
+
+    try {
+        console.log('Loading questions...');
+        const questions = await loadDeckWords(currentDeckId, 20); // 一次加载20个题目
+
+        console.log(`Loaded ${questions.length} questions`);
+
+        // 重置题目列表和索引
+        allQuestions = [];
+        currentQuestionIndex = 0;
+
+        if (questions.length === 0) {
+            console.log('No questions to review');
+            isLoadingQuestions = false;
+            return;
+        }
+
+        // 验证每个题目的FSRS信息
+        questions.forEach(q => {
+            // 确保FSRS信息存在且有效
+            if (!q.fsrs_info || typeof q.fsrs_info !== 'object') {
+                console.warn('Invalid FSRS info for question:', q.question);
+            } else {
+                console.log(`Question: ${q.question}, Next review: ${new Date(q.fsrs_info.next_review).toLocaleString()}, State: ${q.fsrs_info.state}`);
+            }
+        });
+
+        // 随机打乱题目顺序
+        const shuffledQuestions = shuffleArray(questions);
+        console.log('Questions shuffled');
+
+        // 将打乱后的题目添加到全局题目列表
+        allQuestions = shuffledQuestions;
+    } catch (error) {
+        console.error('Error loading questions:', error);
+    } finally {
+        isLoadingQuestions = false;
+    }
+}
+
+/**
+ * Set up event listeners for flashcard mode
+ */
+function setupEventListeners() {
+    // Flashcard click event
+    const flashcard = document.getElementById('flashcard');
+    if (flashcard) {
+        flashcard.removeEventListener('click', flipFlashcard);
+        flashcard.addEventListener('click', flipFlashcard);
+    }
+
+    // Difficulty buttons
+    document.querySelectorAll('.difficulty-btn').forEach(btn => {
+        btn.removeEventListener('click', handleDifficultyRating);
+        btn.addEventListener('click', handleDifficultyRating);
+    });
+
+    // 确保全局可以访问flipFlashcard函数
+    if (typeof window !== 'undefined') {
+        window.flipFlashcard = flipFlashcard;
+    }
+
+    // 注意：键盘事件监听器已移至app.js中统一处理
+}
+
+/**
+ * Show the next flashcard
+ */
+export async function nextFlashcard() {
+    console.log('Next flashcard, current index:', currentQuestionIndex);
+
+    // 如果已经显示完当前批次的所有题目，重新加载题目
+    if (currentQuestionIndex >= allQuestions.length) {
+        console.log('All current questions shown, loading new questions...');
+        await loadQuestions();
+
+        // 如果加载后仍然没有题目，则结束学习
+        if (allQuestions.length === 0) {
+            alert('所有单词都已复习完成！');
+            showHomeScreen();
+            return;
+        }
+    }
+
+    // 再次检查是否有题目可以显示
+    if (allQuestions.length === 0 || currentQuestionIndex >= allQuestions.length) {
+        console.log('No questions to show');
+        alert('所有单词都已复习完成！');
+        showHomeScreen();
+        return;
+    }
+
+    // 按顺序获取下一个题目
+    currentQuestion = allQuestions[currentQuestionIndex];
+    currentQuestionIndex++;
+    flashcardState = 'front';
+
+    console.log('Showing question:', currentQuestion.question);
+
+    const flashcard = document.getElementById('flashcard');
+    if (!flashcard) {
+        console.error('Flashcard element not found');
+        return;
+    }
+    flashcard.textContent = currentQuestion.question;
+
+    const answerContainer = document.getElementById('flashcard-answer');
+    if (!answerContainer) {
+        console.error('Answer container element not found');
+        return;
+    }
+
+    const answerDiv = answerContainer.querySelector('.history-answer');
+    if (!answerDiv) {
+        console.error('Answer div element not found');
+        return;
+    }
+
+    // 根据题目类型设置答案
+    let answerContent = '';
+    switch (currentQuestion.type) {
+        case 'japanese_to_others':
+            if (!currentQuestion.is_kana) {
+                answerContent += `${currentQuestion.kana}<br>`;
+            }
+            answerContent += `${currentQuestion.chinese}`;
+            break;
+        case 'kana_to_others':
+            answerContent = `${currentQuestion.japanese}<br>${currentQuestion.chinese}`;
+            break;
+        case 'chinese_to_others':
+            answerContent = `${currentQuestion.japanese}`;
+            if (!currentQuestion.is_kana) {
+                answerContent += `<br>${currentQuestion.kana}`;
+            }
+            break;
+    }
+
+    answerDiv.innerHTML = answerContent;
+    answerContainer.style.visibility = 'hidden';
+
+    const difficultyButtons = document.getElementById('difficultyButtons');
+    if (difficultyButtons) {
+        difficultyButtons.style.visibility = 'hidden';
+    }
+}
+
+/**
+ * Flip the flashcard to show the answer
+ */
+export function flipFlashcard() {
+    if (flashcardState === 'front') {
+        const answerContainer = document.getElementById('flashcard-answer');
+        if (answerContainer) {
+            answerContainer.style.visibility = 'visible';
+        }
+
+        const difficultyButtons = document.getElementById('difficultyButtons');
+        if (difficultyButtons) {
+            difficultyButtons.style.visibility = 'visible';
+        }
+
+        flashcardState = 'back';
+    }
+}
+
+// 用于防止重复处理的标志
+// isProcessingDifficulty 已在文件顶部声明
+
+/**
+ * Handle difficulty rating button click
+ *
+ * @param {Event} e - Click event
+ */
+export async function handleDifficultyRating(e) {
+    // 防止重复处理
+    if (isProcessingDifficulty) {
+        console.log('Already processing a difficulty rating, ignoring this one');
+        return;
+    }
+
+    // 设置标志
+    isProcessingDifficulty = true;
+
+    try {
+        console.log('Processing difficulty rating:', e.target.textContent);
+        const difficulty = e.target.textContent;
+
+        // 确保当前问题有FSRS信息
+        if (!currentQuestion || !currentQuestion.fsrs_info) {
+            console.error('No FSRS info for current question');
+            throw new Error('无法更新FSRS数据：当前问题没有FSRS信息');
+        }
+
+        const recordId = currentQuestion.fsrs_info.record_id;
+
+        // Save FSRS data to server
+        try {
+            const response = await updateFSRSData(recordId, difficulty, currentDeckId);
+            console.log('FSRS data update response:', response);
+
+            if (response.error) {
+                throw new Error(response.error);
+            }
+
+            await nextFlashcard(); // 使用await等待nextFlashcard完成
+        } catch (error) {
+            console.error('Failed to update FSRS data:', error);
+            alert(error.message);
+        }
+    } finally {
+        // 重置标志，添加一个小延迟，防止事件触发太快
+        setTimeout(() => {
+            isProcessingDifficulty = false;
+        }, 500);
+    }
+}
+
+/**
+ * Get the current flashcard state
+ *
+ * @returns {string} - Current flashcard state ('front' or 'back')
+ */
+export function getFlashcardState() {
+    return flashcardState;
+}
+
+/**
+ * Reset flashcard mode state
+ */
+export function resetFlashcardState() {
+    currentQuestion = null;
+    allQuestions = [];
+    currentDeckId = null;
+    flashcardState = 'front';
+    currentQuestionIndex = 0;
+    isLoadingQuestions = false;
+}
+/**
+ * API calls to the backend
+ */
+
+/**
+ * Load decks from the server
+ *
+ * @returns {Promise<Array>} - Promise resolving to an array of deck objects
+ */
+export async function loadDecks() {
+    try {
+        const response = await fetch('/get_decks');
+        return await response.json();
+    } catch (error) {
+        console.error('加载词单失败:', error);
+        throw new Error('加载词单失败，请重试');
+    }
+}
+
+/**
+ * Load words for a deck from the server
+ *
+ * @param {number} deckId - Deck ID
+ * @param {number} limit - Maximum number of questions to return
+ * @returns {Promise<Array>} - Promise resolving to an array of questions
+ */
+export async function loadDeckWords(deckId, limit = 10) {
+    try {
+        const response = await fetch('/get_deck_words', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                deck_id: deckId,
+                limit: limit
+            })
+        });
+        const data = await response.json();
+
+        if (data.error) {
+            throw new Error(data.error);
+        }
+
+        return data;
+    } catch (error) {
+        console.error('加载词单单词失败:', error);
+        throw new Error('加载词单单词失败，请重试');
+    }
+}
+
+/**
+ * Update FSRS data on the server
+ *
+ * @param {number} recordId - FSRS record ID
+ * @param {string} difficulty - Difficulty level ('重来', '困难', '良好', or '简单')
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function updateFSRSData(recordId, difficulty, deckId) {
+    try {
+        console.log(`Updating FSRS data: record_id=${recordId}, difficulty=${difficulty}, deck_id=${deckId}`);
+
+        const response = await fetch('/update_fsrs', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                record_id: recordId,
+                difficulty: difficulty,
+                deck_id: deckId
+            })
+        });
+
+        const result = await response.json();
+        console.log('FSRS update response:', result);
+
+        return result;
+    } catch (error) {
+        console.error('更新FSRS数据失败:', error);
+        throw new Error('更新FSRS数据失败，请重试');
+    }
+}
+
+/**
+ * Delete a deck on the server
+ *
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function deleteDeck(deckId) {
+    try {
+        const response = await fetch('/delete_deck', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ deck_id: deckId })
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('删除词单失败:', error);
+        throw new Error('删除词单失败，请重试');
+    }
+}
+
+/**
+ * Import decks from files
+ *
+ * @param {FileList} files - Files to import
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function importDecks(files) {
+    try {
+        const formData = new FormData();
+        for (const file of files) {
+            formData.append('files', file);
+        }
+
+        const response = await fetch('/import_decks', {
+            method: 'POST',
+            body: formData
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('导入词单失败:', error);
+        throw new Error('导入词单失败，请重试');
+    }
+}
+
+/**
+ * Export wrong answers to a CSV file
+ *
+ * @param {Array} wrongAnswers - Array of wrong answer objects
+ * @returns {Promise<void>} - Promise resolving when the file is downloaded
+ */
+export async function exportWrongAnswers(wrongAnswers) {
+    try {
+        const response = await fetch('/export_wrong_answers', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ wrong_answers: wrongAnswers })
+        });
+
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'wrong_answers.csv';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+        } else {
+            const data = await response.json();
+            throw new Error(data.error || '导出失败');
+        }
+    } catch (error) {
+        console.error('导出错题失败:', error);
+        throw new Error('导出错题失败，请重试');
+    }
+}
+use std::error::Error;
+use std::{env, fs};
+use regex::Regex;
+
+pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    let contents = fs::read_to_string(config.file_path)?;
+    // println!("file content is \n{}", contents);
+    let result = if config.use_regex {
+        search_regex(&config.query, &contents)?
+    } else if config.use_glob {
+        search_glob(&config.query, &contents)
+    } else if config.ignore_case {
+        search_insentive(&config.query, &contents)
+    } else {
+        search(&config.query, &contents)
+    };
+    for line in result {
+        println!("{line}");
+    }
+
+    Ok(())
+}
+
+pub struct Config {
+    pub query: String,
+    pub file_path: String,
+    pub ignore_case: bool,
+    pub use_regex: bool,
+    pub use_glob: bool,
+}
+
+impl Config {
+    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str> {
+        args.next();
+
+        let mut query: Option<String> = None;
+        let mut file_path: Option<String> = None;
+        let mut use_regex = false;
+        let mut use_glob = false;
+
+        // Parse flags
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--regex" => use_regex = true,
+                "--glob" => use_glob = true,
+                _ => {
+                    // If not a flag, treat as query or file_path
+                    if query.is_none() {
+                        query = Some(arg);
+                    } else if file_path.is_none() {
+                        file_path = Some(arg);
+                    } else {
+                        return Err("Too many arguments");
+                    }
+                }
+            }
+        }
+
+        let query = query.ok_or("Can't get a query string")?;
+        let file_path = file_path.ok_or("Can't get a file path")?;
+
+        let ignore_case = env::var("IGNORE_CASE").is_ok();
+
+        Ok(Config {
+            query,
+            file_path,
+            ignore_case,
+            use_regex,
+            use_glob,
+        })
+    }
+}
+
+pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    contents
+        .lines()
+        .filter(|line| line.contains(&query))
+        .collect()
+}
+
+pub fn search_insentive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    let query = query.to_lowercase();
+    contents
+        .lines()
+        .filter(|line| line.to_lowercase().contains(&query))
+        .collect()
+}
+
+pub fn search_regex<'a>(query: &str, contents: &'a str) -> Result<Vec<&'a str>, Box<dyn Error>> {
+    let re = Regex::new(query)?;
+    Ok(contents
+        .lines()
+        .filter(|line| re.is_match(line))
+        .collect())
+}
+
+pub fn search_glob<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    // Convert glob pattern to regex pattern for substring matching
+    let regex_pattern = glob_to_regex(query);
+    if let Ok(re) = Regex::new(&regex_pattern) {
+        contents
+            .lines()
+            .filter(|line| re.is_match(line))
+            .collect()
+    } else {
+        // Fallback to simple string matching if glob conversion fails
+        contents
+            .lines()
+            .filter(|line| line.contains(query))
+            .collect()
+    }
+}
+
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^.*");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push_str("."),
+            '.' => regex.push_str("\\."),
+            '+' => regex.push_str("\\+"),
+            '^' => regex.push_str("\\^"),
+            '$' => regex.push_str("\\$"),
+            '(' => regex.push_str("\\("),
+            ')' => regex.push_str("\\)"),
+            '[' => regex.push_str("\\["),
+            ']' => regex.push_str("\\]"),
+            '{' => regex.push_str("\\{"),
+            '}' => regex.push_str("\\}"),
+            '|' => regex.push_str("\\|"),
+            '\\' => regex.push_str("\\\\"),
+            _ => regex.push(ch),
+        }
+    }
+    regex.push_str(".*$");
+    regex
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{search, search_insentive, search_regex, search_glob};
+
+    #[test]
+    fn case_sensitive() {
+        let query = "duct";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        assert_eq!(vec!["safe, fast, productive."], search(query, contents));
+    }
+
+    #[test]
+    fn case_insensitive() {
+        let query = "Rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.
+Trust me.";
+
+        assert_eq!(
+            vec!["Rust:", "Trust me."],
+            search_insentive(query, contents)
+        );
+    }
+
+    #[test]
+    fn regex_simple() {
+        let query = "safe|fast";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn regex_start_of_line() {
+        let query = "^[A-Z]";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_word_boundary() {
+        let query = r"\b\w{4}\b";
+        let contents = "\
+Rust safe fast
+Pick three";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust safe fast", "Pick three"], result);
+    }
+
+    #[test]
+    fn regex_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.";
+
+        let result = search_regex(query, contents);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn glob_simple() {
+        let query = "*fast*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn glob_wildcard_end() {
+        let query = "R*t";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        // Invalid glob patterns should fall back to "*" pattern
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_case_insensitive() {
+        let query = "(?i)rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_multiple_matches() {
+        let query = "*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+}
+/**
+ * Flashcard mode functionality
+ */
+
+import { loadDeckWords, updateFSRSData } from './api.js';
+import { showFlashcardScreen, showHomeScreen } from './ui.js';
+
+// State variables
+let currentQuestion = null;
+let allQuestions = [];
+let currentDeckId = null;
+let flashcardState = 'front';
+let currentQuestionIndex = 0;
+let isLoadingQuestions = false;
+let isProcessingDifficulty = false;
+
+/**
+ * Start flashcard mode with a specific deck
+ *
+ * @param {number} deckId - Deck ID
+ */
+export async function startFlashcardMode(deckId) {
+    currentDeckId = deckId;
+
+    try {
+        // 重置状态
+        allQuestions = [];
+        isLoadingQuestions = false;
+        currentQuestionIndex = 0; // 重置当前题目索引
+
+        // Show flashcard screen
+        showFlashcardScreen();
+
+        // Add event listeners
+        setupEventListeners();
+
+        // 加载题目
+        await loadQuestions();
+
+        // Show first flashcard
+        nextFlashcard();
+    } catch (error) {
+        console.error('Error starting flashcard mode:', error);
+        throw error;
+    }
+}
+
+/**
+ * 随机打乱数组顺序（Fisher-Yates 洗牌算法）
+ *
+ * @param {Array} array - 要打乱的数组
+ * @returns {Array} - 打乱后的数组
+ */
+function shuffleArray(array) {
+    const shuffled = [...array]; // 创建数组的副本
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; // 交换元素
+    }
+    return shuffled;
+}
+
+/**
+ * Load questions from the server
+ */
+async function loadQuestions() {
+    if (isLoadingQuestions) return;
+
+    isLoadingQuestions = true;
+
+    try {
+        console.log('Loading questions...');
+        const questions = await loadDeckWords(currentDeckId, 20); // 一次加载20个题目
+
+        console.log(`Loaded ${questions.length} questions`);
+
+        // 重置题目列表和索引
+        allQuestions = [];
+        currentQuestionIndex = 0;
+
+        if (questions.length === 0) {
+            console.log('No questions to review');
+            isLoadingQuestions = false;
+            return;
+        }
+
+        // 验证每个题目的FSRS信息
+        questions.forEach(q => {
+            // 确保FSRS信息存在且有效
+            if (!q.fsrs_info || typeof q.fsrs_info !== 'object') {
+                console.warn('Invalid FSRS info for question:', q.question);
+            } else {
+                console.log(`Question: ${q.question}, Next review: ${new Date(q.fsrs_info.next_review).toLocaleString()}, State: ${q.fsrs_info.state}`);
+            }
+        });
+
+        // 随机打乱题目顺序
+        const shuffledQuestions = shuffleArray(questions);
+        console.log('Questions shuffled');
+
+        // 将打乱后的题目添加到全局题目列表
+        allQuestions = shuffledQuestions;
+    } catch (error) {
+        console.error('Error loading questions:', error);
+    } finally {
+        isLoadingQuestions = false;
+    }
+}
+
+/**
+ * Set up event listeners for flashcard mode
+ */
+function setupEventListeners() {
+    // Flashcard click event
+    const flashcard = document.getElementById('flashcard');
+    if (flashcard) {
+        flashcard.removeEventListener('click', flipFlashcard);
+        flashcard.addEventListener('click', flipFlashcard);
+    }
+
+    // Difficulty buttons
+    document.querySelectorAll('.difficulty-btn').forEach(btn => {
+        btn.removeEventListener('click', handleDifficultyRating);
+        btn.addEventListener('click', handleDifficultyRating);
+    });
+
+    // 确保全局可以访问flipFlashcard函数
+    if (typeof window !== 'undefined') {
+        window.flipFlashcard = flipFlashcard;
+    }
+
+    // 注意：键盘事件监听器已移至app.js中统一处理
+}
+
+/**
+ * Show the next flashcard
+ */
+export async function nextFlashcard() {
+    console.log('Next flashcard, current index:', currentQuestionIndex);
+
+    // 如果已经显示完当前批次的所有题目，重新加载题目
+    if (currentQuestionIndex >= allQuestions.length) {
+        console.log('All current questions shown, loading new questions...');
+        await loadQuestions();
+
+        // 如果加载后仍然没有题目，则结束学习
+        if (allQuestions.length === 0) {
+            alert('所有单词都已复习完成！');
+            showHomeScreen();
+            return;
+        }
+    }
+
+    // 再次检查是否有题目可以显示
+    if (allQuestions.length === 0 || currentQuestionIndex >= allQuestions.length) {
+        console.log('No questions to show');
+        alert('所有单词都已复习完成！');
+        showHomeScreen();
+        return;
+    }
+
+    // 按顺序获取下一个题目
+    currentQuestion = allQuestions[currentQuestionIndex];
+    currentQuestionIndex++;
+    flashcardState = 'front';
+
+    console.log('Showing question:', currentQuestion.question);
+
+    const flashcard = document.getElementById('flashcard');
+    if (!flashcard) {
+        console.error('Flashcard element not found');
+        return;
+    }
+    flashcard.textContent = currentQuestion.question;
+
+    const answerContainer = document.getElementById('flashcard-answer');
+    if (!answerContainer) {
+        console.error('Answer container element not found');
+        return;
+    }
+
+    const answerDiv = answerContainer.querySelector('.history-answer');
+    if (!answerDiv) {
+        console.error('Answer div element not found');
+        return;
+    }
+
+    // 根据题目类型设置答案
+    let answerContent = '';
+    switch (currentQuestion.type) {
+        case 'japanese_to_others':
+            if (!currentQuestion.is_kana) {
+                answerContent += `${currentQuestion.kana}<br>`;
+            }
+            answerContent += `${currentQuestion.chinese}`;
+            break;
+        case 'kana_to_others':
+            answerContent = `${currentQuestion.japanese}<br>${currentQuestion.chinese}`;
+            break;
+        case 'chinese_to_others':
+            answerContent = `${currentQuestion.japanese}`;
+            if (!currentQuestion.is_kana) {
+                answerContent += `<br>${currentQuestion.kana}`;
+            }
+            break;
+    }
+
+    answerDiv.innerHTML = answerContent;
+    answerContainer.style.visibility = 'hidden';
+
+    const difficultyButtons = document.getElementById('difficultyButtons');
+    if (difficultyButtons) {
+        difficultyButtons.style.visibility = 'hidden';
+    }
+}
+
+/**
+ * Flip the flashcard to show the answer
+ */
+export function flipFlashcard() {
+    if (flashcardState === 'front') {
+        const answerContainer = document.getElementById('flashcard-answer');
+        if (answerContainer) {
+            answerContainer.style.visibility = 'visible';
+        }
+
+        const difficultyButtons = document.getElementById('difficultyButtons');
+        if (difficultyButtons) {
+            difficultyButtons.style.visibility = 'visible';
+        }
+
+        flashcardState = 'back';
+    }
+}
+
+// 用于防止重复处理的标志
+// isProcessingDifficulty 已在文件顶部声明
+
+/**
+ * Handle difficulty rating button click
+ *
+ * @param {Event} e - Click event
+ */
+export async function handleDifficultyRating(e) {
+    // 防止重复处理
+    if (isProcessingDifficulty) {
+        console.log('Already processing a difficulty rating, ignoring this one');
+        return;
+    }
+
+    // 设置标志
+    isProcessingDifficulty = true;
+
+    try {
+        console.log('Processing difficulty rating:', e.target.textContent);
+        const difficulty = e.target.textContent;
+
+        // 确保当前问题有FSRS信息
+        if (!currentQuestion || !currentQuestion.fsrs_info) {
+            console.error('No FSRS info for current question');
+            throw new Error('无法更新FSRS数据：当前问题没有FSRS信息');
+        }
+
+        const recordId = currentQuestion.fsrs_info.record_id;
+
+        // Save FSRS data to server
+        try {
+            const response = await updateFSRSData(recordId, difficulty, currentDeckId);
+            console.log('FSRS data update response:', response);
+
+            if (response.error) {
+                throw new Error(response.error);
+            }
+
+            await nextFlashcard(); // 使用await等待nextFlashcard完成
+        } catch (error) {
+            console.error('Failed to update FSRS data:', error);
+            alert(error.message);
+        }
+    } finally {
+        // 重置标志，添加一个小延迟，防止事件触发太快
+        setTimeout(() => {
+            isProcessingDifficulty = false;
+        }, 500);
+    }
+}
+
+/**
+ * Get the current flashcard state
+ *
+ * @returns {string} - Current flashcard state ('front' or 'back')
+ */
+export function getFlashcardState() {
+    return flashcardState;
+}
+
+/**
+ * Reset flashcard mode state
+ */
+export function resetFlashcardState() {
+    currentQuestion = null;
+    allQuestions = [];
+    currentDeckId = null;
+    flashcardState = 'front';
+    currentQuestionIndex = 0;
+    isLoadingQuestions = false;
+}
+/**
+ * API calls to the backend
+ */
+
+/**
+ * Load decks from the server
+ *
+ * @returns {Promise<Array>} - Promise resolving to an array of deck objects
+ */
+export async function loadDecks() {
+    try {
+        const response = await fetch('/get_decks');
+        return await response.json();
+    } catch (error) {
+        console.error('加载词单失败:', error);
+        throw new Error('加载词单失败，请重试');
+    }
+}
+
+/**
+ * Load words for a deck from the server
+ *
+ * @param {number} deckId - Deck ID
+ * @param {number} limit - Maximum number of questions to return
+ * @returns {Promise<Array>} - Promise resolving to an array of questions
+ */
+export async function loadDeckWords(deckId, limit = 10) {
+    try {
+        const response = await fetch('/get_deck_words', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                deck_id: deckId,
+                limit: limit
+            })
+        });
+        const data = await response.json();
+
+        if (data.error) {
+            throw new Error(data.error);
+        }
+
+        return data;
+    } catch (error) {
+        console.error('加载词单单词失败:', error);
+        throw new Error('加载词单单词失败，请重试');
+    }
+}
+
+/**
+ * Update FSRS data on the server
+ *
+ * @param {number} recordId - FSRS record ID
+ * @param {string} difficulty - Difficulty level ('重来', '困难', '良好', or '简单')
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function updateFSRSData(recordId, difficulty, deckId) {
+    try {
+        console.log(`Updating FSRS data: record_id=${recordId}, difficulty=${difficulty}, deck_id=${deckId}`);
+
+        const response = await fetch('/update_fsrs', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                record_id: recordId,
+                difficulty: difficulty,
+                deck_id: deckId
+            })
+        });
+
+        const result = await response.json();
+        console.log('FSRS update response:', result);
+
+        return result;
+    } catch (error) {
+        console.error('更新FSRS数据失败:', error);
+        throw new Error('更新FSRS数据失败，请重试');
+    }
+}
+
+/**
+ * Delete a deck on the server
+ *
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function deleteDeck(deckId) {
+    try {
+        const response = await fetch('/delete_deck', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ deck_id: deckId })
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('删除词单失败:', error);
+        throw new Error('删除词单失败，请重试');
+    }
+}
+
+/**
+ * Import decks from files
+ *
+ * @param {FileList} files - Files to import
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function importDecks(files) {
+    try {
+        const formData = new FormData();
+        for (const file of files) {
+            formData.append('files', file);
+        }
+
+        const response = await fetch('/import_decks', {
+            method: 'POST',
+            body: formData
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('导入词单失败:', error);
+        throw new Error('导入词单失败，请重试');
+    }
+}
+
+/**
+ * Export wrong answers to a CSV file
+ *
+ * @param {Array} wrongAnswers - Array of wrong answer objects
+ * @returns {Promise<void>} - Promise resolving when the file is downloaded
+ */
+export async function exportWrongAnswers(wrongAnswers) {
+    try {
+        const response = await fetch('/export_wrong_answers', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ wrong_answers: wrongAnswers })
+        });
+
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'wrong_answers.csv';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+        } else {
+            const data = await response.json();
+            throw new Error(data.error || '导出失败');
+        }
+    } catch (error) {
+        console.error('导出错题失败:', error);
+        throw new Error('导出错题失败，请重试');
+    }
+}
+
+
+
+
+
+
+
+
+use std::error::Error;
+use std::{env, fs};
+use regex::Regex;
+
+pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    let contents = fs::read_to_string(config.file_path)?;
+    // println!("file content is \n{}", contents);
+    let result = if config.use_regex {
+        search_regex(&config.query, &contents)?
+    } else if config.use_glob {
+        search_glob(&config.query, &contents)
+    } else if config.ignore_case {
+        search_insentive(&config.query, &contents)
+    } else {
+        search(&config.query, &contents)
+    };
+    for line in result {
+        println!("{line}");
+    }
+
+    Ok(())
+}
+
+pub struct Config {
+    pub query: String,
+    pub file_path: String,
+    pub ignore_case: bool,
+    pub use_regex: bool,
+    pub use_glob: bool,
+}
+
+impl Config {
+    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str> {
+        args.next();
+
+        let mut query: Option<String> = None;
+        let mut file_path: Option<String> = None;
+        let mut use_regex = false;
+        let mut use_glob = false;
+
+        // Parse flags
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--regex" => use_regex = true,
+                "--glob" => use_glob = true,
+                _ => {
+                    // If not a flag, treat as query or file_path
+                    if query.is_none() {
+                        query = Some(arg);
+                    } else if file_path.is_none() {
+                        file_path = Some(arg);
+                    } else {
+                        return Err("Too many arguments");
+                    }
+                }
+            }
+        }
+
+        let query = query.ok_or("Can't get a query string")?;
+        let file_path = file_path.ok_or("Can't get a file path")?;
+
+        let ignore_case = env::var("IGNORE_CASE").is_ok();
+
+        Ok(Config {
+            query,
+            file_path,
+            ignore_case,
+            use_regex,
+            use_glob,
+        })
+    }
+}
+
+pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    contents
+        .lines()
+        .filter(|line| line.contains(&query))
+        .collect()
+}
+
+pub fn search_insentive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    let query = query.to_lowercase();
+    contents
+        .lines()
+        .filter(|line| line.to_lowercase().contains(&query))
+        .collect()
+}
+
+pub fn search_regex<'a>(query: &str, contents: &'a str) -> Result<Vec<&'a str>, Box<dyn Error>> {
+    let re = Regex::new(query)?;
+    Ok(contents
+        .lines()
+        .filter(|line| re.is_match(line))
+        .collect())
+}
+
+pub fn search_glob<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    // Convert glob pattern to regex pattern for substring matching
+    let regex_pattern = glob_to_regex(query);
+    if let Ok(re) = Regex::new(&regex_pattern) {
+        contents
+            .lines()
+            .filter(|line| re.is_match(line))
+            .collect()
+    } else {
+        // Fallback to simple string matching if glob conversion fails
+        contents
+            .lines()
+            .filter(|line| line.contains(query))
+            .collect()
+    }
+}
+
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^.*");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push_str("."),
+            '.' => regex.push_str("\\."),
+            '+' => regex.push_str("\\+"),
+            '^' => regex.push_str("\\^"),
+            '$' => regex.push_str("\\$"),
+            '(' => regex.push_str("\\("),
+            ')' => regex.push_str("\\)"),
+            '[' => regex.push_str("\\["),
+            ']' => regex.push_str("\\]"),
+            '{' => regex.push_str("\\{"),
+            '}' => regex.push_str("\\}"),
+            '|' => regex.push_str("\\|"),
+            '\\' => regex.push_str("\\\\"),
+            _ => regex.push(ch),
+        }
+    }
+    regex.push_str(".*$");
+    regex
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{search, search_insentive, search_regex, search_glob};
+
+    #[test]
+    fn case_sensitive() {
+        let query = "duct";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        assert_eq!(vec!["safe, fast, productive."], search(query, contents));
+    }
+
+    #[test]
+    fn case_insensitive() {
+        let query = "Rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.
+Trust me.";
+
+        assert_eq!(
+            vec!["Rust:", "Trust me."],
+            search_insentive(query, contents)
+        );
+    }
+
+    #[test]
+    fn regex_simple() {
+        let query = "safe|fast";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn regex_start_of_line() {
+        let query = "^[A-Z]";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_word_boundary() {
+        let query = r"\b\w{4}\b";
+        let contents = "\
+Rust safe fast
+Pick three";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust safe fast", "Pick three"], result);
+    }
+
+    #[test]
+    fn regex_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.";
+
+        let result = search_regex(query, contents);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn glob_simple() {
+        let query = "*fast*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn glob_wildcard_end() {
+        let query = "R*t";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        // Invalid glob patterns should fall back to "*" pattern
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_case_insensitive() {
+        let query = "(?i)rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_multiple_matches() {
+        let query = "*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+}
+/**
+ * Flashcard mode functionality
+ */
+
+import { loadDeckWords, updateFSRSData } from './api.js';
+import { showFlashcardScreen, showHomeScreen } from './ui.js';
+
+// State variables
+let currentQuestion = null;
+let allQuestions = [];
+let currentDeckId = null;
+let flashcardState = 'front';
+let currentQuestionIndex = 0;
+let isLoadingQuestions = false;
+let isProcessingDifficulty = false;
+
+/**
+ * Start flashcard mode with a specific deck
+ *
+ * @param {number} deckId - Deck ID
+ */
+export async function startFlashcardMode(deckId) {
+    currentDeckId = deckId;
+
+    try {
+        // 重置状态
+        allQuestions = [];
+        isLoadingQuestions = false;
+        currentQuestionIndex = 0; // 重置当前题目索引
+
+        // Show flashcard screen
+        showFlashcardScreen();
+
+        // Add event listeners
+        setupEventListeners();
+
+        // 加载题目
+        await loadQuestions();
+
+        // Show first flashcard
+        nextFlashcard();
+    } catch (error) {
+        console.error('Error starting flashcard mode:', error);
+        throw error;
+    }
+}
+
+/**
+ * 随机打乱数组顺序（Fisher-Yates 洗牌算法）
+ *
+ * @param {Array} array - 要打乱的数组
+ * @returns {Array} - 打乱后的数组
+ */
+function shuffleArray(array) {
+    const shuffled = [...array]; // 创建数组的副本
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; // 交换元素
+    }
+    return shuffled;
+}
+
+/**
+ * Load questions from the server
+ */
+async function loadQuestions() {
+    if (isLoadingQuestions) return;
+
+    isLoadingQuestions = true;
+
+    try {
+        console.log('Loading questions...');
+        const questions = await loadDeckWords(currentDeckId, 20); // 一次加载20个题目
+
+        console.log(`Loaded ${questions.length} questions`);
+
+        // 重置题目列表和索引
+        allQuestions = [];
+        currentQuestionIndex = 0;
+
+        if (questions.length === 0) {
+            console.log('No questions to review');
+            isLoadingQuestions = false;
+            return;
+        }
+
+        // 验证每个题目的FSRS信息
+        questions.forEach(q => {
+            // 确保FSRS信息存在且有效
+            if (!q.fsrs_info || typeof q.fsrs_info !== 'object') {
+                console.warn('Invalid FSRS info for question:', q.question);
+            } else {
+                console.log(`Question: ${q.question}, Next review: ${new Date(q.fsrs_info.next_review).toLocaleString()}, State: ${q.fsrs_info.state}`);
+            }
+        });
+
+        // 随机打乱题目顺序
+        const shuffledQuestions = shuffleArray(questions);
+        console.log('Questions shuffled');
+
+        // 将打乱后的题目添加到全局题目列表
+        allQuestions = shuffledQuestions;
+    } catch (error) {
+        console.error('Error loading questions:', error);
+    } finally {
+        isLoadingQuestions = false;
+    }
+}
+
+/**
+ * Set up event listeners for flashcard mode
+ */
+function setupEventListeners() {
+    // Flashcard click event
+    const flashcard = document.getElementById('flashcard');
+    if (flashcard) {
+        flashcard.removeEventListener('click', flipFlashcard);
+        flashcard.addEventListener('click', flipFlashcard);
+    }
+
+    // Difficulty buttons
+    document.querySelectorAll('.difficulty-btn').forEach(btn => {
+        btn.removeEventListener('click', handleDifficultyRating);
+        btn.addEventListener('click', handleDifficultyRating);
+    });
+
+    // 确保全局可以访问flipFlashcard函数
+    if (typeof window !== 'undefined') {
+        window.flipFlashcard = flipFlashcard;
+    }
+
+    // 注意：键盘事件监听器已移至app.js中统一处理
+}
+
+/**
+ * Show the next flashcard
+ */
+export async function nextFlashcard() {
+    console.log('Next flashcard, current index:', currentQuestionIndex);
+
+    // 如果已经显示完当前批次的所有题目，重新加载题目
+    if (currentQuestionIndex >= allQuestions.length) {
+        console.log('All current questions shown, loading new questions...');
+        await loadQuestions();
+
+        // 如果加载后仍然没有题目，则结束学习
+        if (allQuestions.length === 0) {
+            alert('所有单词都已复习完成！');
+            showHomeScreen();
+            return;
+        }
+    }
+
+    // 再次检查是否有题目可以显示
+    if (allQuestions.length === 0 || currentQuestionIndex >= allQuestions.length) {
+        console.log('No questions to show');
+        alert('所有单词都已复习完成！');
+        showHomeScreen();
+        return;
+    }
+
+    // 按顺序获取下一个题目
+    currentQuestion = allQuestions[currentQuestionIndex];
+    currentQuestionIndex++;
+    flashcardState = 'front';
+
+    console.log('Showing question:', currentQuestion.question);
+
+    const flashcard = document.getElementById('flashcard');
+    if (!flashcard) {
+        console.error('Flashcard element not found');
+        return;
+    }
+    flashcard.textContent = currentQuestion.question;
+
+    const answerContainer = document.getElementById('flashcard-answer');
+    if (!answerContainer) {
+        console.error('Answer container element not found');
+        return;
+    }
+
+    const answerDiv = answerContainer.querySelector('.history-answer');
+    if (!answerDiv) {
+        console.error('Answer div element not found');
+        return;
+    }
+
+    // 根据题目类型设置答案
+    let answerContent = '';
+    switch (currentQuestion.type) {
+        case 'japanese_to_others':
+            if (!currentQuestion.is_kana) {
+                answerContent += `${currentQuestion.kana}<br>`;
+            }
+            answerContent += `${currentQuestion.chinese}`;
+            break;
+        case 'kana_to_others':
+            answerContent = `${currentQuestion.japanese}<br>${currentQuestion.chinese}`;
+            break;
+        case 'chinese_to_others':
+            answerContent = `${currentQuestion.japanese}`;
+            if (!currentQuestion.is_kana) {
+                answerContent += `<br>${currentQuestion.kana}`;
+            }
+            break;
+    }
+
+    answerDiv.innerHTML = answerContent;
+    answerContainer.style.visibility = 'hidden';
+
+    const difficultyButtons = document.getElementById('difficultyButtons');
+    if (difficultyButtons) {
+        difficultyButtons.style.visibility = 'hidden';
+    }
+}
+
+/**
+ * Flip the flashcard to show the answer
+ */
+export function flipFlashcard() {
+    if (flashcardState === 'front') {
+        const answerContainer = document.getElementById('flashcard-answer');
+        if (answerContainer) {
+            answerContainer.style.visibility = 'visible';
+        }
+
+        const difficultyButtons = document.getElementById('difficultyButtons');
+        if (difficultyButtons) {
+            difficultyButtons.style.visibility = 'visible';
+        }
+
+        flashcardState = 'back';
+    }
+}
+
+// 用于防止重复处理的标志
+// isProcessingDifficulty 已在文件顶部声明
+
+/**
+ * Handle difficulty rating button click
+ *
+ * @param {Event} e - Click event
+ */
+export async function handleDifficultyRating(e) {
+    // 防止重复处理
+    if (isProcessingDifficulty) {
+        console.log('Already processing a difficulty rating, ignoring this one');
+        return;
+    }
+
+    // 设置标志
+    isProcessingDifficulty = true;
+
+    try {
+        console.log('Processing difficulty rating:', e.target.textContent);
+        const difficulty = e.target.textContent;
+
+        // 确保当前问题有FSRS信息
+        if (!currentQuestion || !currentQuestion.fsrs_info) {
+            console.error('No FSRS info for current question');
+            throw new Error('无法更新FSRS数据：当前问题没有FSRS信息');
+        }
+
+        const recordId = currentQuestion.fsrs_info.record_id;
+
+        // Save FSRS data to server
+        try {
+            const response = await updateFSRSData(recordId, difficulty, currentDeckId);
+            console.log('FSRS data update response:', response);
+
+            if (response.error) {
+                throw new Error(response.error);
+            }
+
+            await nextFlashcard(); // 使用await等待nextFlashcard完成
+        } catch (error) {
+            console.error('Failed to update FSRS data:', error);
+            alert(error.message);
+        }
+    } finally {
+        // 重置标志，添加一个小延迟，防止事件触发太快
+        setTimeout(() => {
+            isProcessingDifficulty = false;
+        }, 500);
+    }
+}
+
+/**
+ * Get the current flashcard state
+ *
+ * @returns {string} - Current flashcard state ('front' or 'back')
+ */
+export function getFlashcardState() {
+    return flashcardState;
+}
+
+/**
+ * Reset flashcard mode state
+ */
+export function resetFlashcardState() {
+    currentQuestion = null;
+    allQuestions = [];
+    currentDeckId = null;
+    flashcardState = 'front';
+    currentQuestionIndex = 0;
+    isLoadingQuestions = false;
+}
+/**
+ * API calls to the backend
+ */
+
+/**
+ * Load decks from the server
+ *
+ * @returns {Promise<Array>} - Promise resolving to an array of deck objects
+ */
+export async function loadDecks() {
+    try {
+        const response = await fetch('/get_decks');
+        return await response.json();
+    } catch (error) {
+        console.error('加载词单失败:', error);
+        throw new Error('加载词单失败，请重试');
+    }
+}
+
+/**
+ * Load words for a deck from the server
+ *
+ * @param {number} deckId - Deck ID
+ * @param {number} limit - Maximum number of questions to return
+ * @returns {Promise<Array>} - Promise resolving to an array of questions
+ */
+export async function loadDeckWords(deckId, limit = 10) {
+    try {
+        const response = await fetch('/get_deck_words', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                deck_id: deckId,
+                limit: limit
+            })
+        });
+        const data = await response.json();
+
+        if (data.error) {
+            throw new Error(data.error);
+        }
+
+        return data;
+    } catch (error) {
+        console.error('加载词单单词失败:', error);
+        throw new Error('加载词单单词失败，请重试');
+    }
+}
+
+/**
+ * Update FSRS data on the server
+ *
+ * @param {number} recordId - FSRS record ID
+ * @param {string} difficulty - Difficulty level ('重来', '困难', '良好', or '简单')
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function updateFSRSData(recordId, difficulty, deckId) {
+    try {
+        console.log(`Updating FSRS data: record_id=${recordId}, difficulty=${difficulty}, deck_id=${deckId}`);
+
+        const response = await fetch('/update_fsrs', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                record_id: recordId,
+                difficulty: difficulty,
+                deck_id: deckId
+            })
+        });
+
+        const result = await response.json();
+        console.log('FSRS update response:', result);
+
+        return result;
+    } catch (error) {
+        console.error('更新FSRS数据失败:', error);
+        throw new Error('更新FSRS数据失败，请重试');
+    }
+}
+
+/**
+ * Delete a deck on the server
+ *
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function deleteDeck(deckId) {
+    try {
+        const response = await fetch('/delete_deck', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ deck_id: deckId })
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('删除词单失败:', error);
+        throw new Error('删除词单失败，请重试');
+    }
+}
+
+/**
+ * Import decks from files
+ *
+ * @param {FileList} files - Files to import
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function importDecks(files) {
+    try {
+        const formData = new FormData();
+        for (const file of files) {
+            formData.append('files', file);
+        }
+
+        const response = await fetch('/import_decks', {
+            method: 'POST',
+            body: formData
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('导入词单失败:', error);
+        throw new Error('导入词单失败，请重试');
+    }
+}
+
+/**
+ * Export wrong answers to a CSV file
+ *
+ * @param {Array} wrongAnswers - Array of wrong answer objects
+ * @returns {Promise<void>} - Promise resolving when the file is downloaded
+ */
+export async function exportWrongAnswers(wrongAnswers) {
+    try {
+        const response = await fetch('/export_wrong_answers', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ wrong_answers: wrongAnswers })
+        });
+
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'wrong_answers.csv';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+        } else {
+            const data = await response.json();
+            throw new Error(data.error || '导出失败');
+        }
+    } catch (error) {
+        console.error('导出错题失败:', error);
+        throw new Error('导出错题失败，请重试');
+    }
+}
+
+
+
+
+
+
+
+use std::error::Error;
+use std::{env, fs};
+use regex::Regex;
+
+pub fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    let contents = fs::read_to_string(config.file_path)?;
+    // println!("file content is \n{}", contents);
+    let result = if config.use_regex {
+        search_regex(&config.query, &contents)?
+    } else if config.use_glob {
+        search_glob(&config.query, &contents)
+    } else if config.ignore_case {
+        search_insentive(&config.query, &contents)
+    } else {
+        search(&config.query, &contents)
+    };
+    for line in result {
+        println!("{line}");
+    }
+
+    Ok(())
+}
+
+pub struct Config {
+    pub query: String,
+    pub file_path: String,
+    pub ignore_case: bool,
+    pub use_regex: bool,
+    pub use_glob: bool,
+}
+
+impl Config {
+    pub fn build(mut args: impl Iterator<Item = String>) -> Result<Config, &'static str> {
+        args.next();
+
+        let mut query: Option<String> = None;
+        let mut file_path: Option<String> = None;
+        let mut use_regex = false;
+        let mut use_glob = false;
+
+        // Parse flags
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--regex" => use_regex = true,
+                "--glob" => use_glob = true,
+                _ => {
+                    // If not a flag, treat as query or file_path
+                    if query.is_none() {
+                        query = Some(arg);
+                    } else if file_path.is_none() {
+                        file_path = Some(arg);
+                    } else {
+                        return Err("Too many arguments");
+                    }
+                }
+            }
+        }
+
+        let query = query.ok_or("Can't get a query string")?;
+        let file_path = file_path.ok_or("Can't get a file path")?;
+
+        let ignore_case = env::var("IGNORE_CASE").is_ok();
+
+        Ok(Config {
+            query,
+            file_path,
+            ignore_case,
+            use_regex,
+            use_glob,
+        })
+    }
+}
+
+pub fn search<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    contents
+        .lines()
+        .filter(|line| line.contains(&query))
+        .collect()
+}
+
+pub fn search_insentive<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    let query = query.to_lowercase();
+    contents
+        .lines()
+        .filter(|line| line.to_lowercase().contains(&query))
+        .collect()
+}
+
+pub fn search_regex<'a>(query: &str, contents: &'a str) -> Result<Vec<&'a str>, Box<dyn Error>> {
+    let re = Regex::new(query)?;
+    Ok(contents
+        .lines()
+        .filter(|line| re.is_match(line))
+        .collect())
+}
+
+pub fn search_glob<'a>(query: &str, contents: &'a str) -> Vec<&'a str> {
+    // Convert glob pattern to regex pattern for substring matching
+    let regex_pattern = glob_to_regex(query);
+    if let Ok(re) = Regex::new(&regex_pattern) {
+        contents
+            .lines()
+            .filter(|line| re.is_match(line))
+            .collect()
+    } else {
+        // Fallback to simple string matching if glob conversion fails
+        contents
+            .lines()
+            .filter(|line| line.contains(query))
+            .collect()
+    }
+}
+
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^.*");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push_str("."),
+            '.' => regex.push_str("\\."),
+            '+' => regex.push_str("\\+"),
+            '^' => regex.push_str("\\^"),
+            '$' => regex.push_str("\\$"),
+            '(' => regex.push_str("\\("),
+            ')' => regex.push_str("\\)"),
+            '[' => regex.push_str("\\["),
+            ']' => regex.push_str("\\]"),
+            '{' => regex.push_str("\\{"),
+            '}' => regex.push_str("\\}"),
+            '|' => regex.push_str("\\|"),
+            '\\' => regex.push_str("\\\\"),
+            _ => regex.push(ch),
+        }
+    }
+    regex.push_str(".*$");
+    regex
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{search, search_insentive, search_regex, search_glob};
+
+    #[test]
+    fn case_sensitive() {
+        let query = "duct";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        assert_eq!(vec!["safe, fast, productive."], search(query, contents));
+    }
+
+    #[test]
+    fn case_insensitive() {
+        let query = "Rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.
+Trust me.";
+
+        assert_eq!(
+            vec!["Rust:", "Trust me."],
+            search_insentive(query, contents)
+        );
+    }
+
+    #[test]
+    fn regex_simple() {
+        let query = "safe|fast";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn regex_start_of_line() {
+        let query = "^[A-Z]";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_word_boundary() {
+        let query = r"\b\w{4}\b";
+        let contents = "\
+Rust safe fast
+Pick three";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust safe fast", "Pick three"], result);
+    }
+
+    #[test]
+    fn regex_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.";
+
+        let result = search_regex(query, contents);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn glob_simple() {
+        let query = "*fast*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["safe, fast, productive."], result);
+    }
+
+    #[test]
+    fn glob_wildcard_end() {
+        let query = "R*t";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_invalid_pattern() {
+        let query = "[invalid";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        // Invalid glob patterns should fall back to "*" pattern
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+
+    #[test]
+    fn regex_case_insensitive() {
+        let query = "(?i)rust";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_regex(query, contents).unwrap();
+        assert_eq!(vec!["Rust:"], result);
+    }
+
+    #[test]
+    fn glob_multiple_matches() {
+        let query = "*";
+        let contents = "\
+Rust:
+safe, fast, productive.
+Pick three.";
+
+        let result = search_glob(query, contents);
+        assert_eq!(vec!["Rust:", "safe, fast, productive.", "Pick three."], result);
+    }
+}
+/**
+ * Flashcard mode functionality
+ */
+
+import { loadDeckWords, updateFSRSData } from './api.js';
+import { showFlashcardScreen, showHomeScreen } from './ui.js';
+
+// State variables
+let currentQuestion = null;
+let allQuestions = [];
+let currentDeckId = null;
+let flashcardState = 'front';
+let currentQuestionIndex = 0;
+let isLoadingQuestions = false;
+let isProcessingDifficulty = false;
+
+/**
+ * Start flashcard mode with a specific deck
+ *
+ * @param {number} deckId - Deck ID
+ */
+export async function startFlashcardMode(deckId) {
+    currentDeckId = deckId;
+
+    try {
+        // 重置状态
+        allQuestions = [];
+        isLoadingQuestions = false;
+        currentQuestionIndex = 0; // 重置当前题目索引
+
+        // Show flashcard screen
+        showFlashcardScreen();
+
+        // Add event listeners
+        setupEventListeners();
+
+        // 加载题目
+        await loadQuestions();
+
+        // Show first flashcard
+        nextFlashcard();
+    } catch (error) {
+        console.error('Error starting flashcard mode:', error);
+        throw error;
+    }
+}
+
+/**
+ * 随机打乱数组顺序（Fisher-Yates 洗牌算法）
+ *
+ * @param {Array} array - 要打乱的数组
+ * @returns {Array} - 打乱后的数组
+ */
+function shuffleArray(array) {
+    const shuffled = [...array]; // 创建数组的副本
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]; // 交换元素
+    }
+    return shuffled;
+}
+
+/**
+ * Load questions from the server
+ */
+async function loadQuestions() {
+    if (isLoadingQuestions) return;
+
+    isLoadingQuestions = true;
+
+    try {
+        console.log('Loading questions...');
+        const questions = await loadDeckWords(currentDeckId, 20); // 一次加载20个题目
+
+        console.log(`Loaded ${questions.length} questions`);
+
+        // 重置题目列表和索引
+        allQuestions = [];
+        currentQuestionIndex = 0;
+
+        if (questions.length === 0) {
+            console.log('No questions to review');
+            isLoadingQuestions = false;
+            return;
+        }
+
+        // 验证每个题目的FSRS信息
+        questions.forEach(q => {
+            // 确保FSRS信息存在且有效
+            if (!q.fsrs_info || typeof q.fsrs_info !== 'object') {
+                console.warn('Invalid FSRS info for question:', q.question);
+            } else {
+                console.log(`Question: ${q.question}, Next review: ${new Date(q.fsrs_info.next_review).toLocaleString()}, State: ${q.fsrs_info.state}`);
+            }
+        });
+
+        // 随机打乱题目顺序
+        const shuffledQuestions = shuffleArray(questions);
+        console.log('Questions shuffled');
+
+        // 将打乱后的题目添加到全局题目列表
+        allQuestions = shuffledQuestions;
+    } catch (error) {
+        console.error('Error loading questions:', error);
+    } finally {
+        isLoadingQuestions = false;
+    }
+}
+
+/**
+ * Set up event listeners for flashcard mode
+ */
+function setupEventListeners() {
+    // Flashcard click event
+    const flashcard = document.getElementById('flashcard');
+    if (flashcard) {
+        flashcard.removeEventListener('click', flipFlashcard);
+        flashcard.addEventListener('click', flipFlashcard);
+    }
+
+    // Difficulty buttons
+    document.querySelectorAll('.difficulty-btn').forEach(btn => {
+        btn.removeEventListener('click', handleDifficultyRating);
+        btn.addEventListener('click', handleDifficultyRating);
+    });
+
+    // 确保全局可以访问flipFlashcard函数
+    if (typeof window !== 'undefined') {
+        window.flipFlashcard = flipFlashcard;
+    }
+
+    // 注意：键盘事件监听器已移至app.js中统一处理
+}
+
+/**
+ * Show the next flashcard
+ */
+export async function nextFlashcard() {
+    console.log('Next flashcard, current index:', currentQuestionIndex);
+
+    // 如果已经显示完当前批次的所有题目，重新加载题目
+    if (currentQuestionIndex >= allQuestions.length) {
+        console.log('All current questions shown, loading new questions...');
+        await loadQuestions();
+
+        // 如果加载后仍然没有题目，则结束学习
+        if (allQuestions.length === 0) {
+            alert('所有单词都已复习完成！');
+            showHomeScreen();
+            return;
+        }
+    }
+
+    // 再次检查是否有题目可以显示
+    if (allQuestions.length === 0 || currentQuestionIndex >= allQuestions.length) {
+        console.log('No questions to show');
+        alert('所有单词都已复习完成！');
+        showHomeScreen();
+        return;
+    }
+
+    // 按顺序获取下一个题目
+    currentQuestion = allQuestions[currentQuestionIndex];
+    currentQuestionIndex++;
+    flashcardState = 'front';
+
+    console.log('Showing question:', currentQuestion.question);
+
+    const flashcard = document.getElementById('flashcard');
+    if (!flashcard) {
+        console.error('Flashcard element not found');
+        return;
+    }
+    flashcard.textContent = currentQuestion.question;
+
+    const answerContainer = document.getElementById('flashcard-answer');
+    if (!answerContainer) {
+        console.error('Answer container element not found');
+        return;
+    }
+
+    const answerDiv = answerContainer.querySelector('.history-answer');
+    if (!answerDiv) {
+        console.error('Answer div element not found');
+        return;
+    }
+
+    // 根据题目类型设置答案
+    let answerContent = '';
+    switch (currentQuestion.type) {
+        case 'japanese_to_others':
+            if (!currentQuestion.is_kana) {
+                answerContent += `${currentQuestion.kana}<br>`;
+            }
+            answerContent += `${currentQuestion.chinese}`;
+            break;
+        case 'kana_to_others':
+            answerContent = `${currentQuestion.japanese}<br>${currentQuestion.chinese}`;
+            break;
+        case 'chinese_to_others':
+            answerContent = `${currentQuestion.japanese}`;
+            if (!currentQuestion.is_kana) {
+                answerContent += `<br>${currentQuestion.kana}`;
+            }
+            break;
+    }
+
+    answerDiv.innerHTML = answerContent;
+    answerContainer.style.visibility = 'hidden';
+
+    const difficultyButtons = document.getElementById('difficultyButtons');
+    if (difficultyButtons) {
+        difficultyButtons.style.visibility = 'hidden';
+    }
+}
+
+/**
+ * Flip the flashcard to show the answer
+ */
+export function flipFlashcard() {
+    if (flashcardState === 'front') {
+        const answerContainer = document.getElementById('flashcard-answer');
+        if (answerContainer) {
+            answerContainer.style.visibility = 'visible';
+        }
+
+        const difficultyButtons = document.getElementById('difficultyButtons');
+        if (difficultyButtons) {
+            difficultyButtons.style.visibility = 'visible';
+        }
+
+        flashcardState = 'back';
+    }
+}
+
+// 用于防止重复处理的标志
+// isProcessingDifficulty 已在文件顶部声明
+
+/**
+ * Handle difficulty rating button click
+ *
+ * @param {Event} e - Click event
+ */
+export async function handleDifficultyRating(e) {
+    // 防止重复处理
+    if (isProcessingDifficulty) {
+        console.log('Already processing a difficulty rating, ignoring this one');
+        return;
+    }
+
+    // 设置标志
+    isProcessingDifficulty = true;
+
+    try {
+        console.log('Processing difficulty rating:', e.target.textContent);
+        const difficulty = e.target.textContent;
+
+        // 确保当前问题有FSRS信息
+        if (!currentQuestion || !currentQuestion.fsrs_info) {
+            console.error('No FSRS info for current question');
+            throw new Error('无法更新FSRS数据：当前问题没有FSRS信息');
+        }
+
+        const recordId = currentQuestion.fsrs_info.record_id;
+
+        // Save FSRS data to server
+        try {
+            const response = await updateFSRSData(recordId, difficulty, currentDeckId);
+            console.log('FSRS data update response:', response);
+
+            if (response.error) {
+                throw new Error(response.error);
+            }
+
+            await nextFlashcard(); // 使用await等待nextFlashcard完成
+        } catch (error) {
+            console.error('Failed to update FSRS data:', error);
+            alert(error.message);
+        }
+    } finally {
+        // 重置标志，添加一个小延迟，防止事件触发太快
+        setTimeout(() => {
+            isProcessingDifficulty = false;
+        }, 500);
+    }
+}
+
+/**
+ * Get the current flashcard state
+ *
+ * @returns {string} - Current flashcard state ('front' or 'back')
+ */
+export function getFlashcardState() {
+    return flashcardState;
+}
+
+/**
+ * Reset flashcard mode state
+ */
+export function resetFlashcardState() {
+    currentQuestion = null;
+    allQuestions = [];
+    currentDeckId = null;
+    flashcardState = 'front';
+    currentQuestionIndex = 0;
+    isLoadingQuestions = false;
+}
+/**
+ * API calls to the backend
+ */
+
+/**
+ * Load decks from the server
+ *
+ * @returns {Promise<Array>} - Promise resolving to an array of deck objects
+ */
+export async function loadDecks() {
+    try {
+        const response = await fetch('/get_decks');
+        return await response.json();
+    } catch (error) {
+        console.error('加载词单失败:', error);
+        throw new Error('加载词单失败，请重试');
+    }
+}
+
+/**
+ * Load words for a deck from the server
+ *
+ * @param {number} deckId - Deck ID
+ * @param {number} limit - Maximum number of questions to return
+ * @returns {Promise<Array>} - Promise resolving to an array of questions
+ */
+export async function loadDeckWords(deckId, limit = 10) {
+    try {
+        const response = await fetch('/get_deck_words', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                deck_id: deckId,
+                limit: limit
+            })
+        });
+        const data = await response.json();
+
+        if (data.error) {
+            throw new Error(data.error);
+        }
+
+        return data;
+    } catch (error) {
+        console.error('加载词单单词失败:', error);
+        throw new Error('加载词单单词失败，请重试');
+    }
+}
+
+/**
+ * Update FSRS data on the server
+ *
+ * @param {number} recordId - FSRS record ID
+ * @param {string} difficulty - Difficulty level ('重来', '困难', '良好', or '简单')
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function updateFSRSData(recordId, difficulty, deckId) {
+    try {
+        console.log(`Updating FSRS data: record_id=${recordId}, difficulty=${difficulty}, deck_id=${deckId}`);
+
+        const response = await fetch('/update_fsrs', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                record_id: recordId,
+                difficulty: difficulty,
+                deck_id: deckId
+            })
+        });
+
+        const result = await response.json();
+        console.log('FSRS update response:', result);
+
+        return result;
+    } catch (error) {
+        console.error('更新FSRS数据失败:', error);
+        throw new Error('更新FSRS数据失败，请重试');
+    }
+}
+
+/**
+ * Delete a deck on the server
+ *
+ * @param {number} deckId - Deck ID
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function deleteDeck(deckId) {
+    try {
+        const response = await fetch('/delete_deck', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ deck_id: deckId })
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('删除词单失败:', error);
+        throw new Error('删除词单失败，请重试');
+    }
+}
+
+/**
+ * Import decks from files
+ *
+ * @param {FileList} files - Files to import
+ * @returns {Promise<Object>} - Promise resolving to a response object
+ */
+export async function importDecks(files) {
+    try {
+        const formData = new FormData();
+        for (const file of files) {
+            formData.append('files', file);
+        }
+
+        const response = await fetch('/import_decks', {
+            method: 'POST',
+            body: formData
+        });
+        return await response.json();
+    } catch (error) {
+        console.error('导入词单失败:', error);
+        throw new Error('导入词单失败，请重试');
+    }
+}
+
+/**
+ * Export wrong answers to a CSV file
+ *
+ * @param {Array} wrongAnswers - Array of wrong answer objects
+ * @returns {Promise<void>} - Promise resolving when the file is downloaded
+ */
+export async function exportWrongAnswers(wrongAnswers) {
+    try {
+        const response = await fetch('/export_wrong_answers', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ wrong_answers: wrongAnswers })
+        });
+
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'wrong_answers.csv';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            a.remove();
+        } else {
+            const data = await response.json();
+            throw new Error(data.error || '导出失败');
+        }
+    } catch (error) {
+        console.error('导出错题失败:', error);
+        throw new Error('导出错题失败，请重试');
+    }
+}
+
+
+
+
