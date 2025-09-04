@@ -19,6 +19,14 @@ try:
 except ImportError:
     BROTLI_AVAILABLE = False
 
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.backends import default_backend
+    CRYPTOGRAPHY_AVAILABLE = True
+except ImportError:
+    CRYPTOGRAPHY_AVAILABLE = False
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -31,7 +39,71 @@ def calculate_file_hash(file_path: str) -> str:
             hash_sha256.update(chunk)
     return hash_sha256.hexdigest()
 
-def decode_and_decompress(encoded_string: str, algorithm: str = 'brotli') -> Optional[str]:
+def aes_decrypt(encrypted_data: bytes, key: str) -> bytes:
+    """
+    使用AES解密数据（自动检测模式）
+
+    参数:
+    encrypted_data (bytes): 要解密的数据（包含IV/nonce）
+    key (str): 解密密钥
+
+    返回:
+    bytes: 解密后的数据
+    """
+    if not CRYPTOGRAPHY_AVAILABLE:
+        raise ImportError("cryptography库不可用，请安装: pip install cryptography")
+
+    if len(encrypted_data) < 16:
+        raise ValueError("加密数据太短")
+
+    # 提取IV/nonce和加密数据
+    iv_or_nonce = encrypted_data[:16]
+    encrypted_content = encrypted_data[16:]
+
+    # 将密钥转换为32字节（256位）
+    key_bytes = key.encode('utf-8')
+    if len(key_bytes) < 32:
+        key_bytes = key_bytes.ljust(32, b'\x00')
+    elif len(key_bytes) > 32:
+        key_bytes = key_bytes[:32]
+
+    # 首先尝试CTR模式解密（默认模式）
+    try:
+        cipher = Cipher(algorithms.AES(key_bytes), modes.CTR(iv_or_nonce), backend=default_backend())
+        decryptor = cipher.decryptor()
+        decrypted_data = decryptor.update(encrypted_content) + decryptor.finalize()
+        return decrypted_data
+    except Exception as ctr_error:
+        # CTR模式失败，尝试CBC模式（向后兼容）
+        try:
+            cipher = Cipher(algorithms.AES(key_bytes), modes.CBC(iv_or_nonce), backend=default_backend())
+            decryptor = cipher.decryptor()
+
+            # 解密
+            decrypted_padded = decryptor.update(encrypted_content) + decryptor.finalize()
+
+            # 移除PKCS7填充 (AES块大小为16字节 = 128位)
+            unpadder = padding.PKCS7(128).unpadder()
+            decrypted_data = unpadder.update(decrypted_padded) + unpadder.finalize()
+
+            return decrypted_data
+        except Exception as cbc_error:
+            # CBC也失败，尝试OFB模式
+            try:
+                cipher = Cipher(algorithms.AES(key_bytes), modes.OFB(iv_or_nonce), backend=default_backend())
+                decryptor = cipher.decryptor()
+                decrypted_data = decryptor.update(encrypted_content) + decryptor.finalize()
+                return decrypted_data
+            except Exception as ofb_error:
+                # 所有模式都失败，提供详细错误信息
+                error_msg = f"无法解密数据，所有解密模式均失败:\n"
+                error_msg += f"  CTR模式错误: {str(ctr_error)}\n"
+                error_msg += f"  CBC模式错误: {str(cbc_error)}\n"
+                error_msg += f"  OFB模式错误: {str(ofb_error)}\n"
+                error_msg += "可能原因: 密钥错误、数据损坏或使用了不支持的加密模式"
+                raise ValueError(error_msg)
+
+def decode_and_decompress(encoded_string: str, algorithm: str = 'brotli', decrypt: bool = False, key: str = 'encode_patch') -> Optional[str]:
     """
     解码Base64字符串并使用指定算法解压缩
 
@@ -50,6 +122,20 @@ def decode_and_decompress(encoded_string: str, algorithm: str = 'brotli') -> Opt
         logger.debug("开始Base64解码...")
         encoded_bytes = encoded_string.encode('utf-8')
         decoded_bytes = base64.b64decode(encoded_bytes)
+
+        # 可选AES解密（在解压缩之前）
+        if decrypt:
+            logger.info("启用AES解密")
+            logger.info(f"解密密钥: {key}")
+            try:
+                decrypted_bytes = aes_decrypt(decoded_bytes, key)
+                logger.info(f"解密后大小: {len(decrypted_bytes)} 字节")
+                decoded_bytes = decrypted_bytes
+            except ImportError as e:
+                logger.error(f"AES解密失败: {e}")
+                return None
+        else:
+            logger.info("跳过AES解密")
 
         logger.debug(f"开始{algorithm}解压缩...")
 
@@ -89,7 +175,7 @@ def decode_and_decompress(encoded_string: str, algorithm: str = 'brotli') -> Opt
         logger.error(f"解码解压缩过程中出现未知错误: {e}")
         return None
 
-def load_and_restore_from_chunks(restored_code_path: str, base_filename: str = "compress", algorithm: str = 'zlib') -> bool:
+def load_and_restore_from_chunks(restored_code_path: str, base_filename: str = "compress", algorithm: str = 'brotli', decrypt: bool = False, key: str = 'encode_patch') -> bool:
     """
     从分块文件中加载数据，解码解压缩，然后保存到目标文件
 
@@ -136,7 +222,7 @@ def load_and_restore_from_chunks(restored_code_path: str, base_filename: str = "
     logger.info(f"组合字符串长度: {len(combined_string)} 字符")
 
     # 解码解压缩组合字符串
-    original_code = decode_and_decompress(combined_string, algorithm)
+    original_code = decode_and_decompress(combined_string, algorithm, decrypt, key)
 
     if original_code is None:
         logger.error("解码解压缩失败")
@@ -183,11 +269,20 @@ def main():
     parser.add_argument('-i', '--input', default='compress',
                        help='输入分块文件基础名称，默认"compress"')
     parser.add_argument('-a', '--algorithm', choices=['zlib', 'lzma', 'brotli'], default='brotli',
-                       help='解压缩算法 (zlib/lzma/brotli)，默认brotil')
+                       help='解压缩算法 (zlib/lzma/brotli)，默认brotli')
+    parser.add_argument('-d', '--decrypt', action='store_true', default=True,
+                       help='启用AES解密（默认启用）')
+    parser.add_argument('-k', '--key', default='encode_patch',
+                       help='AES解密密钥，默认"encode_patch"')
+    parser.add_argument('--no-decrypt', action='store_true',
+                       help='禁用AES解密')
     parser.add_argument('-v', '--verbose', action='store_true',
                        help='启用详细输出模式')
 
     args = parser.parse_args()
+
+    # 处理解密参数：--no-decrypt优先级高于默认解密
+    decrypt_enabled = args.decrypt and not args.no_decrypt
 
     # 根据详细标志设置日志级别
     if args.verbose:
@@ -199,12 +294,17 @@ def main():
     logger.info(f"输出文件: {args.output_file}")
     logger.info(f"输入基础名称: {args.input}")
     logger.info(f"解压缩算法: {args.algorithm}")
+    logger.info(f"AES解密: {'启用' if decrypt_enabled else '禁用'}")
+    if decrypt_enabled:
+        logger.info(f"解密密钥: {args.key}")
 
     # 加载分块并还原
     success = load_and_restore_from_chunks(
         args.output_file,
         args.input,
-        args.algorithm
+        args.algorithm,
+        decrypt_enabled,
+        args.key
     )
 
     if success:

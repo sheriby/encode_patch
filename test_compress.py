@@ -42,6 +42,7 @@ def test_single_algorithm(algorithm, test_file):
     # 编码测试
     encode_result = subprocess.run([
         sys.executable, "encode.py", test_file,
+        # "--no-encrypt",
         "-a", algorithm,
         "-o", output_base,
         "-c", "9",
@@ -72,6 +73,7 @@ def test_single_algorithm(algorithm, test_file):
 
     decode_result = subprocess.run([
         sys.executable, "decode.py", restored_file,
+        # "--no-decrypt",
         "-i", output_base,
         "-a", algorithm
     ], capture_output=True, text=True, timeout=120)
@@ -118,7 +120,7 @@ def main():
     """主测试函数"""
     print("=== 文件压缩算法性能测试 ===\n")
 
-    test_file = "3body.txt"
+    test_file = "test.patch"
 
     # 检查测试文件
     if not os.path.exists(test_file):
