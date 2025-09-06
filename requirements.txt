@@ -1,0 +1,13 @@
+# encode_patch 项目依赖
+
+# 核心依赖
+cryptography>=3.4.0    # AES加密支持
+brotli>=1.0.9         # Brotli压缩算法
+
+# 可选依赖 (根据需要安装)
+# brotlipy>=0.7.0      # Brotli的替代实现
+
+# 开发依赖 (可选)
+# pytest>=7.0.0        # 测试框架
+# pytest-cov>=4.0.0    # 测试覆盖率
+pyinstaller>=5.0.0    # 可执行文件打包工具

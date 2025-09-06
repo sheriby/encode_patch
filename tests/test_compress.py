@@ -41,7 +41,7 @@ def test_single_algorithm(algorithm, test_file):
     print(f"开始编码测试...")
     # 编码测试
     encode_result = subprocess.run([
-        sys.executable, "encode.py", test_file,
+        sys.executable, "-m", "cli.encode_cli", test_file,
         # "--no-encrypt",
         "-a", algorithm,
         "-o", output_base,
@@ -72,7 +72,7 @@ def test_single_algorithm(algorithm, test_file):
     decode_start = time.time()
 
     decode_result = subprocess.run([
-        sys.executable, "decode.py", restored_file,
+        sys.executable, "-m", "cli.decode_cli", restored_file,
         # "--no-decrypt",
         "-i", output_base,
         "-a", algorithm

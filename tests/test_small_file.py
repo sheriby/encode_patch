@@ -46,7 +46,7 @@ def test_file_compression(file_path, file_name):
     # 测试加密压缩
     print("测试AES加密压缩...")
     result = subprocess.run([
-        sys.executable, "encode.py", file_path,
+        sys.executable, "-m", "cli.encode_cli", file_path,
         "-o", f"test_output/{file_name}_encrypt",
         "-a", "brotli",
         "-c", "9",
@@ -71,7 +71,7 @@ def test_file_compression(file_path, file_name):
     # 测试不加密压缩
     print("测试不加密压缩...")
     result = subprocess.run([
-        sys.executable, "encode.py", file_path,
+        sys.executable, "-m", "cli.encode_cli", file_path,
         "-o", f"test_output/{file_name}_no_encrypt",
         "-a", "brotli",
         "-c", "9",

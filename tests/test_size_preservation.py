@@ -72,7 +72,7 @@ def test_size_preservation():
             # 测试CTR模式加密
             print("测试CTR模式加密...")
             result = subprocess.run([
-                sys.executable, "encode.py", file_path,
+                sys.executable, "-m", "cli.encode_cli", file_path,
                 "-o", f"test_output/{file_name}_ctr",
                 "-a", "brotli",
                 "-c", "9",
@@ -96,7 +96,7 @@ def test_size_preservation():
 
             # 重新生成加密文件用于解密测试
             result = subprocess.run([
-                sys.executable, "encode.py", file_path,
+                sys.executable, "-m", "cli.encode_cli", file_path,
                 "-o", f"test_output/{file_name}_ctr",
                 "-a", "brotli",
                 "-c", "9"
@@ -109,7 +109,7 @@ def test_size_preservation():
             # 测试解密
             print("测试CTR模式解密...")
             result = subprocess.run([
-                sys.executable, "decode.py", f"test_output/{file_name}_restored.txt",
+                sys.executable, "-m", "cli.decode_cli", f"test_output/{file_name}_restored.txt",
                 "-i", f"test_output/{file_name}_ctr",
                 "-a", "brotli",
                 "-v"

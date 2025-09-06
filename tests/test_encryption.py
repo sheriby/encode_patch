@@ -43,7 +43,7 @@ def test_encryption_workflow():
     print("1. 测试AES加密编码...")
     # 使用默认加密
     encode_result = subprocess.run([
-        sys.executable, "encode.py", test_file,
+        sys.executable, "-m", "cli.encode_cli", test_file,
         "-o", "test_output/encrypt_test",
         "-a", "brotli",
         "-c", "9"
@@ -59,7 +59,7 @@ def test_encryption_workflow():
     print("\n2. 测试AES解密解码...")
     # 使用默认解密
     decode_result = subprocess.run([
-        sys.executable, "decode.py", restore_file,
+        sys.executable, "-m", "cli.decode_cli", restore_file,
         "-i", "test_output/encrypt_test",
         "-a", "brotli"
     ], capture_output=True, text=True, timeout=120)
@@ -114,7 +114,7 @@ def test_custom_key():
 
     # 加密
     encode_result = subprocess.run([
-        sys.executable, "encode.py", test_file,
+        sys.executable, "-m", "cli.encode_cli", test_file,
         "-o", "test_output/custom_key",
         "-k", custom_key,
         "-a", "zlib",
@@ -128,7 +128,7 @@ def test_custom_key():
 
     # 解密
     decode_result = subprocess.run([
-        sys.executable, "decode.py", restore_file,
+        sys.executable, "-m", "cli.decode_cli", restore_file,
         "-i", "test_output/custom_key",
         "-k", custom_key,
         "-a", "zlib"
@@ -175,7 +175,7 @@ def test_no_encryption():
 
     # 编码（禁用加密）
     encode_result = subprocess.run([
-        sys.executable, "encode.py", test_file,
+        sys.executable, "-m", "cli.encode_cli", test_file,
         "-o", "test_output/no_encrypt",
         "--no-encrypt",
         "-a", "lzma",
@@ -189,7 +189,7 @@ def test_no_encryption():
 
     # 解码（禁用解密）
     decode_result = subprocess.run([
-        sys.executable, "decode.py", restore_file,
+        sys.executable, "-m", "cli.decode_cli", restore_file,
         "-i", "test_output/no_encrypt",
         "--no-decrypt",
         "-a", "lzma"

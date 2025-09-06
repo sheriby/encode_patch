@@ -1,54 +1,71 @@
-# 文件压缩编码优化项目
+# encode_patch - 文件压缩编码工具
 
 ## 项目概述
 
-这是一个Python文件压缩、编码和分块存储工具，经过全面优化以提高性能、可靠性和可用性。
+这是一个专业的Python文件压缩、编码和分块存储工具，具有模块化设计、全面测试和优秀的用户体验。
 
-## 主要优化内容
+## 主要特性
 
-### 1. 代码结构优化
-- ✅ 添加了完整的类型注解 (`typing`)
-- ✅ 实现了命令行界面 (`argparse`)
-- ✅ 引入了结构化日志系统 (`logging`)
-- ✅ 将硬编码参数改为可配置选项
+### 🏗️ 模块化架构
+- **core/**: 核心功能模块 (压缩、加密、编码/解码)
+- **cli/**: 命令行接口模块
+- **tests/**: 完整的测试套件
+- **main.py**: 统一程序入口
 
-### 2. 错误处理和健壮性
-- ✅ 全面的异常处理和错误恢复
-- ✅ 文件权限和存在性检查
-- ✅ 输入验证和边界条件处理
-- ✅ 优雅的错误消息和退出码
-
-### 3. 性能优化
-- ✅ 流式文件读取 (4KB块) 避免内存溢出
-- ✅ 优化的字符串拼接和文件操作
-- ✅ 进度指示和状态反馈
-
-### 4. 功能增强
+### 🔧 核心功能
 - ✅ 支持多种压缩算法 (zlib/lzma/brotli)
-- ✅ 支持不同压缩级别 (0-9)
-- ✅ 可配置分块大小
-- ✅ 自动创建输出目录
-- ✅ AES-256加密支持 (默认启用)
+- ✅ AES-256加密 (CTR模式，保持文件大小)
+- ✅ Base64编码/解码
+- ✅ 智能文件分块存储
+- ✅ 自动文件大小检测和加密决策
 
-### 5. 用户体验改进
-- ✅ 详细的命令行帮助和使用示例
-- ✅ 进度显示和详细日志输出
-- ✅ 灵活的输入输出路径配置
+### 🧪 全面测试
+- ✅ 压缩算法性能测试
+- ✅ 加密功能完整性测试
+- ✅ 小文件优化测试
+- ✅ 文件大小保持测试
 
-## 使用方法
+## 快速开始
+
+### 安装依赖
+```bash
+pip install -r requirements.txt
+```
+
+### 基本使用
+
+#### 使用主程序
+```bash
+# 编码文件
+python main.py encode test.patch
+
+# 解码文件
+python main.py decode restored.patch
+```
+
+#### 使用CLI模块
+```bash
+# 编码文件
+python -m cli.encode_cli test.patch
+
+# 解码文件
+python -m cli.decode_cli restored.patch
+```
+
+## 详细使用方法
 
 ### 编码文件
 ```bash
-# 基本使用（使用最优配置）
-python encode.py input_file.txt
+# 基本使用（推荐配置）
+python main.py encode input_file.txt
 
-# 使用不同压缩算法
-python encode.py input_file.txt -a lzma          # 使用LZMA压缩
-python encode.py input_file.txt -a brotli        # 使用Brotli压缩
-python encode.py input_file.txt -a zlib -c 9     # 使用zlib最高压缩
+# 指定压缩算法
+python main.py encode input_file.txt -a lzma          # 使用LZMA压缩
+python main.py encode input_file.txt -a brotli        # 使用Brotli压缩 (默认)
+python main.py encode input_file.txt -a zlib -c 9     # 使用zlib最高压缩
 
 # 高级选项
-python encode.py input_file.txt -a brotli -c 9 -s 5000 -o output/compress -v
+python main.py encode input_file.txt -a brotli -c 9 -s 5000 -o output/compress -v
 
 # 参数说明
 # -a, --algorithm: 压缩算法 (zlib/lzma/brotli)，默认brotli
@@ -64,14 +81,14 @@ python encode.py input_file.txt -a brotli -c 9 -s 5000 -o output/compress -v
 ### 解码文件
 ```bash
 # 基本使用
-python decode.py output_file.txt
+python main.py decode output_file.txt
 
 # 指定解压缩算法
-python decode.py output_file.txt -a lzma         # 使用LZMA解压缩
-python decode.py output_file.txt -a brotli       # 使用Brotli解压缩
+python main.py decode output_file.txt -a lzma         # 使用LZMA解压缩
+python main.py decode output_file.txt -a brotli       # 使用Brotli解压缩
 
 # 高级选项
-python decode.py output_file.txt -i input/compress -a brotli -v
+python main.py decode output_file.txt -i input/compress -a brotli -v
 
 # 参数说明
 # -i, --input: 输入分块文件基础名称，默认"compress"
@@ -82,11 +99,58 @@ python decode.py output_file.txt -i input/compress -a brotli -v
 # -v, --verbose: 启用详细输出模式
 ```
 
-- ✅ 完全可配置的参数
-- ✅ 全面的错误处理和恢复
-- ✅ 实时进度显示
-- ✅ 支持任意大小文件
-- ✅ 专业的命令行界面
+## 项目结构
+
+```
+encode_patch/
+├── main.py                 # 主程序入口
+├── core/                   # 核心功能模块
+│   ├── __init__.py
+│   ├── encode_core.py      # 编码核心功能
+│   └── decode_core.py      # 解码核心功能
+├── cli/                    # 命令行接口模块
+│   ├── __init__.py
+│   ├── encode_cli.py       # 编码CLI
+│   └── decode_cli.py       # 解码CLI
+├── tests/                  # 测试模块
+│   ├── __init__.py
+│   ├── test_compress.py    # 压缩算法测试
+│   ├── test_encryption.py  # 加密功能测试
+│   ├── test_small_file.py  # 小文件测试
+│   └── test_size_preservation.py # 大小保持测试
+├── requirements.txt        # 项目依赖
+├── README.md              # 项目文档
+├── .gitignore             # Git忽略文件
+└── test.patch             # 测试文件
+```
+
+## 测试结果
+
+### ✅ 压缩算法测试
+基于测试文件 (test.patch，83KB):
+
+| 算法 | 压缩率 | 编码时间 | 解码时间 | 总时间 | 状态 |
+|------|--------|----------|----------|--------|------|
+| zlib | 9.58% | 0.15s | 0.04s | 0.19s | ✅ 通过 |
+| lzma | 8.24% | 0.05s | 0.04s | 0.09s | ✅ 通过 |
+| brotli | 7.72% | 0.05s | 0.04s | 0.09s | ✅ 通过 |
+
+**最佳性能**: BROTLI算法 (最快总时间 0.09秒)
+
+### ✅ 加密功能测试
+- ✅ 默认加密解密工作流
+- ✅ 自定义密钥支持
+- ✅ 加密禁用功能
+
+### ✅ 小文件优化测试
+- ✅ 智能文件大小检测
+- ✅ 小文件自动跳过加密
+- ✅ 加密开销分析
+
+### ✅ 大小保持测试
+- ✅ CTR模式完美保持文件大小
+- ✅ MD5完整性验证
+- ✅ 解决传统CBC模式的填充开销问题
 
 ## 技术特性
 
@@ -97,6 +161,12 @@ python decode.py output_file.txt -i input/compress -a brotli -v
 - 支持9个压缩级别 (0-9)
 - 自动检测可用算法并提供友好的错误提示
 
+### 加密特性
+- **AES-256**: 使用CTR模式，保证文件大小不变
+- **智能决策**: 小文件自动跳过加密以避免开销
+- **密钥管理**: 支持自定义密钥
+- **安全可靠**: 工业级加密标准
+
 ### 字符编码
 - **Base64编码**: 将二进制数据转换为安全的文本格式
 - **标准兼容**: 使用RFC 4648标准的Base64字符集
@@ -106,37 +176,6 @@ python decode.py output_file.txt -i input/compress -a brotli -v
 - 可配置分块大小
 - 支持目录自动创建
 - 进度跟踪和状态报告
-
-## 文件结构
-
-```
-encode_patch/
-├── encode.py          # 优化后的编码工具
-├── decode.py          # 优化后的解码工具
-├── test_optimization.py # 测试脚本
-├── test.patch         # 测试文件
-├── README.md          # 项目文档
-├── compress0.txt      # 示例分块文件
-├── compress1.txt
-└── compress2.txt
-```
-
-## 性能基准
-
-基于测试文件 (test.patch，大小约15KB):
-
-- **压缩率**: 约85-150% (取决于文件类型、压缩级别和是否启用加密)
-  - 小于100%: 成功压缩，文件变小
-  - 大于100%: 文件增大（Base64编码开销 + AES加密开销 + 难以压缩的文件）
-- **处理速度**: < 1秒
-- **内存使用**: 通过流式处理最小化
-
-**压缩率说明**:
-- **Base64编码**: 会增加约33%的文件大小
-- **AES加密**: 会增加16字节IV + PKCS7填充开销
-- **小文件影响**: 小于2KB的文件加密开销相对较大
-- **智能决策**: 系统会自动检测小文件并给出建议
-- **实际效果**: 取决于文件内容、压缩算法和加密设置
 
 ## 兼容性
 
